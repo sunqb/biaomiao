@@ -139,24 +139,12 @@ class BaimiaoOCR:
         self._save_config()
 
     def _ensure_token(self) -> None:
+        """确保有有效的登录 token，没有则登录。有 token 直接复用，不做额外网络请求。"""
         if not self.uuid or not self.login_token:
             self.login()
             return
-
         self.headers["X-AUTH-UUID"] = self.uuid
         self.headers["X-AUTH-TOKEN"] = self.login_token
-
-        result = self._request(
-            "POST", "/api/user/login/anonymous", headers=self.headers
-        )
-        token = result.get("data", {}).get("token")
-        if token is None:
-            raise RuntimeError(json.dumps(result, ensure_ascii=False))
-        if token:
-            self.login_token = token
-            self.headers["X-AUTH-TOKEN"] = self.login_token
-        else:
-            self.login()
 
     def _get_single_permission(self) -> tuple[str, str]:
         result = self._request(
@@ -179,6 +167,40 @@ class BaimiaoOCR:
             return payload, detected_mime
         return image, mime_type
 
+    def _oss_upload(self, raw_bytes: bytes, mime_type: str) -> str:
+        """上传原始图片字节到阿里云 OSS，返回 file_key。"""
+        resp = self.session.get(
+            f"{BAIMIAO_URL}/api/oss/sign",
+            headers=self.headers,
+            params={"mime_type": mime_type},
+            timeout=self.request_timeout,
+        )
+        if not resp.ok:
+            raise RuntimeError(f"OSS sign failed: {resp.status_code}")
+        sign = resp.json().get("data", {}).get("result", {})
+
+        form = {
+            "success_action_status": "200",
+            "policy": sign["policy"],
+            "x-oss-signature": sign["signature"],
+            "x-oss-signature-version": sign["x_oss_signature_version"],
+            "x-oss-credential": sign["x_oss_credential"],
+            "x-oss-date": sign["x_oss_date"],
+            "key": sign["file_key"],
+            "x-oss-security-token": sign["security_token"],
+        }
+        ext = mime_type.split("/")[-1]
+        oss_timeout = max(self.request_timeout, 60)  # OSS 上传大图需要更长超时
+        oss_resp = self.session.post(
+            sign["host"],
+            data=form,
+            files={"file": (f"image.{ext}", raw_bytes, mime_type)},
+            timeout=oss_timeout,
+        )
+        if oss_resp.status_code != 200:
+            raise RuntimeError(f"OSS upload failed: {oss_resp.status_code}")
+        return sign["file_key"]
+
     def recognize(
         self,
         base64_image: str,
@@ -191,13 +213,14 @@ class BaimiaoOCR:
         image_payload, detected_mime = self._normalize_base64_image(
             base64_image, mime_type
         )
-        image_data_url = f"data:{detected_mime};base64,{image_payload}"
         raw_bytes = base64.b64decode(image_payload)
         hash_value = hashlib.md5(raw_bytes).hexdigest()
-        actual_size = (
-            size if size > 0 else len(image_payload)
-        )  # base64字符串长度，与ocr.bak一致
+        actual_size = size if size > 0 else len(image_payload)
 
+        # plus 引擎需要先上传到 OSS，获取 fileKey
+        file_key = self._oss_upload(raw_bytes, detected_mime)
+
+        image_data_url = f"data:{detected_mime};base64,{image_payload}"
         data = {
             "batchId": "",
             "total": 1,
@@ -206,6 +229,7 @@ class BaimiaoOCR:
             "name": filename,
             "size": actual_size,
             "dataUrl": image_data_url,
+            "fileKey": file_key,
             "result": {},
             "status": "processing",
             "isSuccess": False,
