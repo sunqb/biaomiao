@@ -5,6 +5,7 @@ import configparser
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -201,6 +202,59 @@ class BaimiaoOCR:
             raise RuntimeError(f"OSS upload failed: {oss_resp.status_code}")
         return sign["file_key"]
 
+    def _prepare_image(
+        self, base64_image: str, mime_type: str, filename: str, size: int
+    ) -> tuple[bytes, str, str, str, int]:
+        """解码图片，上传 OSS，返回 (raw_bytes, image_payload, detected_mime, file_key, actual_size)。"""
+        image_payload, detected_mime = self._normalize_base64_image(
+            base64_image, mime_type
+        )
+        raw_bytes = base64.b64decode(image_payload)
+        actual_size = size if size > 0 else len(image_payload)
+        file_key = self._oss_upload(raw_bytes, detected_mime)
+        return raw_bytes, image_payload, detected_mime, file_key, actual_size
+
+    def _build_ocr_payload(
+        self,
+        token: str,
+        filename: str,
+        raw_bytes: bytes,
+        image_payload: str,
+        detected_mime: str,
+        file_key: str,
+        actual_size: int,
+    ) -> dict:
+        """构造提交给白描 OCR 的请求体。"""
+        return {
+            "batchId": "",
+            "total": 1,
+            "token": token,
+            "hash": hashlib.md5(raw_bytes).hexdigest(),
+            "name": filename,
+            "size": actual_size,
+            "dataUrl": f"data:{detected_mime};base64,{image_payload}",
+            "fileKey": file_key,
+            "result": {},
+            "status": "processing",
+            "isSuccess": False,
+        }
+
+    def _poll_job(self, engine: str, job_status_id: str) -> dict:
+        """轮询任务状态直到完成，返回 data 字段。"""
+        deadline = time.monotonic() + self.ocr_timeout
+        while time.monotonic() < deadline:
+            time.sleep(self.poll_interval)
+            result = self._request(
+                "GET",
+                f"/api/ocr/{engine}/status",
+                headers=self.headers,
+                params={"jobStatusId": job_status_id},
+            )
+            data = result.get("data", {})
+            if data.get("isEnded"):
+                return data
+        raise TimeoutError(f"OCR timeout after {self.ocr_timeout}s")
+
     def recognize(
         self,
         base64_image: str,
@@ -208,59 +262,141 @@ class BaimiaoOCR:
         mime_type: str = "image/png",
         size: int = 0,
     ) -> str:
+        """普通文字识别，返回纯文本。"""
         self._ensure_token()
         engine, token = self._get_single_permission()
-        image_payload, detected_mime = self._normalize_base64_image(
-            base64_image, mime_type
+        raw_bytes, image_payload, detected_mime, file_key, actual_size = (
+            self._prepare_image(base64_image, mime_type, filename, size)
         )
-        raw_bytes = base64.b64decode(image_payload)
-        hash_value = hashlib.md5(raw_bytes).hexdigest()
-        actual_size = size if size > 0 else len(image_payload)
-
-        # plus 引擎需要先上传到 OSS，获取 fileKey
-        file_key = self._oss_upload(raw_bytes, detected_mime)
-
-        image_data_url = f"data:{detected_mime};base64,{image_payload}"
-        data = {
-            "batchId": "",
-            "total": 1,
-            "token": token,
-            "hash": hash_value,
-            "name": filename,
-            "size": actual_size,
-            "dataUrl": image_data_url,
-            "fileKey": file_key,
-            "result": {},
-            "status": "processing",
-            "isSuccess": False,
-        }
+        payload = self._build_ocr_payload(
+            token,
+            filename,
+            raw_bytes,
+            image_payload,
+            detected_mime,
+            file_key,
+            actual_size,
+        )
         result = self._request(
-            "POST", f"/api/ocr/image/{engine}", headers=self.headers, json=data
+            "POST", f"/api/ocr/image/{engine}", headers=self.headers, json=payload
         )
         job_status_id = result.get("data", {}).get("jobStatusId")
         if not job_status_id:
             raise RuntimeError(json.dumps(result, ensure_ascii=False))
 
-        deadline = time.monotonic() + self.ocr_timeout
-        while time.monotonic() < deadline:
-            time.sleep(self.poll_interval)
-            params = {"jobStatusId": job_status_id}
-            result = self._request(
-                "GET",
-                f"/api/ocr/image/{engine}/status",
-                headers=self.headers,
-                params=params,
-            )
-            data = result.get("data", {})
-            if not data.get("isEnded"):
-                continue
+        data = self._poll_job(f"image/{engine}", job_status_id)
+        words_result = data.get("ydResp", {}).get("words_result", [])
+        return "\n".join(
+            item.get("words", "") for item in words_result if item.get("words")
+        )
 
-            words_result = data.get("ydResp", {}).get("words_result", [])
-            return "\n".join(
-                item.get("words", "") for item in words_result if item.get("words")
-            )
+    def recognize_detail(
+        self,
+        base64_image: str,
+        filename: str = "image.png",
+        mime_type: str = "image/png",
+        size: int = 0,
+    ) -> list:
+        """文字识别，返回带坐标的完整结果列表。"""
+        self._ensure_token()
+        engine, token = self._get_single_permission()
+        raw_bytes, image_payload, detected_mime, file_key, actual_size = (
+            self._prepare_image(base64_image, mime_type, filename, size)
+        )
+        payload = self._build_ocr_payload(
+            token,
+            filename,
+            raw_bytes,
+            image_payload,
+            detected_mime,
+            file_key,
+            actual_size,
+        )
+        result = self._request(
+            "POST", f"/api/ocr/image/{engine}", headers=self.headers, json=payload
+        )
+        job_status_id = result.get("data", {}).get("jobStatusId")
+        if not job_status_id:
+            raise RuntimeError(json.dumps(result, ensure_ascii=False))
 
-        raise TimeoutError(f"OCR timeout after {self.ocr_timeout}s")
+        data = self._poll_job(f"image/{engine}", job_status_id)
+        return data.get("ydResp", {}).get("words_result", [])
+
+    def recognize_latex(
+        self,
+        base64_image: str,
+        filename: str = "image.png",
+        mime_type: str = "image/png",
+        size: int = 0,
+    ) -> str:
+        """LaTeX 公式识别，返回 LaTeX 字符串。"""
+        self._ensure_token()
+        engine, token = self._get_single_permission()
+        raw_bytes, image_payload, detected_mime, file_key, actual_size = (
+            self._prepare_image(base64_image, mime_type, filename, size)
+        )
+        payload = self._build_ocr_payload(
+            token,
+            filename,
+            raw_bytes,
+            image_payload,
+            detected_mime,
+            file_key,
+            actual_size,
+        )
+        result = self._request(
+            "POST", f"/api/ocr/latex/{engine}", headers=self.headers, json=payload
+        )
+        job_status_id = result.get("data", {}).get("jobStatusId")
+        if not job_status_id:
+            raise RuntimeError(json.dumps(result, ensure_ascii=False))
+
+        data = self._poll_job(f"latex/{engine}", job_status_id)
+        # latex 结果在 ydResp.data.region[].recog.content 里
+        yd = data.get("ydResp", {})
+        regions = yd.get("data", yd).get("region", [])
+        parts = []
+        for r in regions:
+            content = r.get("recog", {}).get("content", "")
+            if content:
+                # 清理 ifly-latex-begin/end 标记，保留内部 LaTeX
+                content = re.sub(r"\s*ifly-latex-begin\s*", "", content)
+                content = re.sub(r"\s*ifly-latex-end\s*", "", content)
+                parts.append(content.strip())
+        return "\n".join(parts)
+
+    def recognize_table(
+        self,
+        base64_image: str,
+        filename: str = "image.png",
+        mime_type: str = "image/png",
+        size: int = 0,
+    ) -> dict:
+        """表格识别，返回 {xlsx_url, file_name}。"""
+        self._ensure_token()
+        engine, token = self._get_single_permission()
+        raw_bytes, image_payload, detected_mime, file_key, actual_size = (
+            self._prepare_image(base64_image, mime_type, filename, size)
+        )
+        payload = self._build_ocr_payload(
+            token,
+            filename,
+            raw_bytes,
+            image_payload,
+            detected_mime,
+            file_key,
+            actual_size,
+        )
+        result = self._request(
+            "POST", "/api/ocr/table/parser", headers=self.headers, json=payload
+        )
+        if result.get("code") != 1:
+            raise RuntimeError(json.dumps(result, ensure_ascii=False))
+        yd = result.get("data", {}).get("ydResp", {}).get("result", {})
+        return {
+            "xlsx_url": yd.get("file_preview_url", ""),
+            "file_name": yd.get("file_name", ""),
+        }
 
 
 class OcrRequest(BaseModel):
@@ -304,6 +440,28 @@ class OcrResponse(BaseModel):
     text: str
 
 
+class WordBlock(BaseModel):
+    words: str
+    location: dict = Field(
+        default_factory=dict, description="矩形框 {left,top,width,height}"
+    )
+    vertexes_location: list = Field(default_factory=list, description="四角坐标列表")
+    score: float = 0.0
+
+
+class OcrDetailResponse(BaseModel):
+    blocks: list[WordBlock]
+
+
+class LatexResponse(BaseModel):
+    latex: str
+
+
+class TableResponse(BaseModel):
+    xlsx_url: str
+    file_name: str
+
+
 app = FastAPI(title="Baimiao OCR API", version="1.0.0")
 _ocr_instance: BaimiaoOCR | None = None
 
@@ -328,6 +486,45 @@ def ocr(request: OcrRequest) -> OcrResponse:
             image_payload, filename, request.mime_type, size=size
         )
         return OcrResponse(text=text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/ocr/detail", response_model=OcrDetailResponse)
+def ocr_detail(request: OcrRequest) -> OcrDetailResponse:
+    """文字识别，返回带坐标的词块列表，可用于前端渲染高亮选中。"""
+    try:
+        image_payload, filename, size = request.get_image_data()
+        blocks = get_ocr_instance().recognize_detail(
+            image_payload, filename, request.mime_type, size=size
+        )
+        return OcrDetailResponse(blocks=[WordBlock(**b) for b in blocks])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/ocr/latex", response_model=LatexResponse)
+def ocr_latex(request: OcrRequest) -> LatexResponse:
+    """数学公式识别，返回 LaTeX 字符串。"""
+    try:
+        image_payload, filename, size = request.get_image_data()
+        latex = get_ocr_instance().recognize_latex(
+            image_payload, filename, request.mime_type, size=size
+        )
+        return LatexResponse(latex=latex)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/ocr/table", response_model=TableResponse)
+def ocr_table(request: OcrRequest) -> TableResponse:
+    """表格识别，返回 xlsx 下载链接。"""
+    try:
+        image_payload, filename, size = request.get_image_data()
+        result = get_ocr_instance().recognize_table(
+            image_payload, filename, request.mime_type, size=size
+        )
+        return TableResponse(**result)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
