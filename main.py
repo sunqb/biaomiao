@@ -189,16 +189,17 @@ class BaimiaoOCR:
             base64_image, mime_type
         )
         image_data_url = f"data:{detected_mime};base64,{image_payload}"
-        hash_value = hashlib.sha1(image_data_url.encode("utf-8")).hexdigest()
+        raw_bytes = base64.b64decode(image_payload)
+        hash_value = hashlib.md5(raw_bytes).hexdigest()
+        actual_size = size if size > 0 else len(raw_bytes)
 
-        # size is original image bytes; fallback to base64 string length if not provided
         data = {
             "batchId": "",
             "total": 1,
             "token": token,
             "hash": hash_value,
             "name": filename,
-            "size": size if size > 0 else len(image_payload),
+            "size": actual_size,
             "dataUrl": image_data_url,
             "result": {},
             "status": "processing",
