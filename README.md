@@ -31,6 +31,19 @@ ocr_timeout = 60
 poll_interval = 0.2
 ```
 
+## 鉴权
+
+所有 OCR 接口（`/ocr`、`/ocr/detail`、`/ocr/latex`、`/ocr/table`）支持 Bearer Token 鉴权。  
+`/health` 接口不需要鉴权。
+
+**配置方式**：在 `.env` 或环境变量中设置 `API_KEY`：
+
+```ini
+API_KEY=your-secret-token
+```
+
+未设置 `API_KEY` 时，所有请求均放行，便于本地开发调试。
+
 ## 启动 API
 
 ```bash
@@ -52,6 +65,8 @@ docker compose up -d --build
 ```ini
 BAIMIAO_USERNAME=your_account
 BAIMIAO_PASSWORD=your_password
+# API token 鉴权，留空则不启用鉴权
+API_KEY=your-secret-token
 BAIMIAO_REQUEST_TIMEOUT=15
 BAIMIAO_OCR_TIMEOUT=60
 BAIMIAO_POLL_INTERVAL=0.2
@@ -69,7 +84,15 @@ docker compose down
 
 接口：
 
-- `GET /health`：健康检查
+所有 OCR 接口需要在 Header 中携带 Bearer Token（配置了 `API_KEY` 时生效）：
+
+```
+Authorization: Bearer your-secret-token
+```
+
+未配置 `API_KEY` 时自动跳过鉴权，便于本地开发。无 token 或 token 错误返回 `401`。
+
+- `GET /health`：健康检查（无需鉴权）
 - `POST /ocr`：文字识别，返回纯文本
 - `POST /ocr/detail`：文字识别，返回带坐标的词块列表
 - `POST /ocr/latex`：数学公式识别，返回 LaTeX 字符串

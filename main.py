@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 
@@ -465,6 +466,19 @@ class TableResponse(BaseModel):
 app = FastAPI(title="Baimiao OCR API", version="1.0.0")
 _ocr_instance: BaimiaoOCR | None = None
 
+_bearer = HTTPBearer(auto_error=False)
+_API_KEY = os.getenv("API_KEY", "")
+
+
+def verify_token(
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+) -> None:
+    """校验 Bearer token，未配置 API_KEY 时跳过鉴权。"""
+    if not _API_KEY:
+        return
+    if credentials is None or credentials.credentials != _API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API token")
+
 
 def get_ocr_instance() -> BaimiaoOCR:
     global _ocr_instance
@@ -478,7 +492,7 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/ocr", response_model=OcrResponse)
+@app.post("/ocr", response_model=OcrResponse, dependencies=[Security(verify_token)])
 def ocr(request: OcrRequest) -> OcrResponse:
     try:
         image_payload, filename, size = request.get_image_data()
@@ -490,7 +504,11 @@ def ocr(request: OcrRequest) -> OcrResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/ocr/detail", response_model=OcrDetailResponse)
+@app.post(
+    "/ocr/detail",
+    response_model=OcrDetailResponse,
+    dependencies=[Security(verify_token)],
+)
 def ocr_detail(request: OcrRequest) -> OcrDetailResponse:
     """文字识别，返回带坐标的词块列表，可用于前端渲染高亮选中。"""
     try:
@@ -503,7 +521,9 @@ def ocr_detail(request: OcrRequest) -> OcrDetailResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/ocr/latex", response_model=LatexResponse)
+@app.post(
+    "/ocr/latex", response_model=LatexResponse, dependencies=[Security(verify_token)]
+)
 def ocr_latex(request: OcrRequest) -> LatexResponse:
     """数学公式识别，返回 LaTeX 字符串。"""
     try:
@@ -516,7 +536,9 @@ def ocr_latex(request: OcrRequest) -> LatexResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/ocr/table", response_model=TableResponse)
+@app.post(
+    "/ocr/table", response_model=TableResponse, dependencies=[Security(verify_token)]
+)
 def ocr_table(request: OcrRequest) -> TableResponse:
     """表格识别，返回 xlsx 下载链接。"""
     try:

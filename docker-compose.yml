@@ -15,6 +15,7 @@ services:
       BAIMIAO_REQUEST_TIMEOUT: ${BAIMIAO_REQUEST_TIMEOUT:-15}
       BAIMIAO_OCR_TIMEOUT: ${BAIMIAO_OCR_TIMEOUT:-60}
       BAIMIAO_POLL_INTERVAL: ${BAIMIAO_POLL_INTERVAL:-0.2}
+      API_KEY: ${API_KEY:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
       interval: 30s
