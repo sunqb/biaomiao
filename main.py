@@ -240,7 +240,7 @@ class OcrRequest(BaseModel):
     mime_type: str = "image/png"
 
     def get_image_data(self) -> tuple[str, str, int]:
-        """Returns (base64_payload, filename, original_size_in_bytes)"""
+        """Returns (base64_payload, filename, base64_length)"""
         raw_url = (self.url or "").strip()
         raw_image = (self.image or "").strip()
 
@@ -257,15 +257,15 @@ class OcrRequest(BaseModel):
                 fname = self.filename
                 if fname == "image.png":
                     fname = Path(target_url.split("?")[0]).name or "image.png"
-                return payload, fname, len(raw_bytes)
+                # size should be base64 string length (same as original ocr.bak)
+                return payload, fname, len(payload)
             except Exception as exc:
                 raise RuntimeError(f"Failed to download image from URL: {exc}") from exc
         elif raw_image:
             if raw_image.startswith("data:"):
                 prefix, payload = raw_image.split(",", 1)
-                approx_size = int(len(payload) * 0.75)
-                return payload, self.filename, approx_size
-            return raw_image, self.filename, int(len(raw_image) * 0.75)
+                return payload, self.filename, len(payload)
+            return raw_image, self.filename, len(raw_image)
         else:
             raise RuntimeError("Either 'image' (base64) or 'url' must be provided")
 
