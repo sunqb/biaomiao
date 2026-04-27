@@ -241,28 +241,31 @@ class OcrRequest(BaseModel):
 
     def get_image_data(self) -> tuple[str, str, int]:
         """Returns (base64_payload, filename, original_size_in_bytes)"""
-        if self.url:
-            # Download image from URL
+        raw_url = (self.url or "").strip()
+        raw_image = (self.image or "").strip()
+
+        # Normalize: if image field contains a URL, treat it as url
+        target_url = raw_url or (
+            raw_image if raw_image.startswith(("http://", "https://")) else ""
+        )
+        if target_url:
             try:
-                resp = requests.get(self.url, timeout=REQUEST_TIMEOUT)
+                resp = requests.get(target_url, timeout=REQUEST_TIMEOUT)
                 resp.raise_for_status()
                 raw_bytes = resp.content
                 payload = base64.b64encode(raw_bytes).decode("utf-8")
-                # Use URL filename if not provided
                 fname = self.filename
                 if fname == "image.png":
-                    fname = Path(self.url.split("?")[0]).name or "image.png"
+                    fname = Path(target_url.split("?")[0]).name or "image.png"
                 return payload, fname, len(raw_bytes)
             except Exception as exc:
                 raise RuntimeError(f"Failed to download image from URL: {exc}") from exc
-        elif self.image:
-            # Extract payload from base64 or data URL
-            if self.image.startswith("data:"):
-                prefix, payload = self.image.split(",", 1)
-                # Approximate original size from base64 payload length
+        elif raw_image:
+            if raw_image.startswith("data:"):
+                prefix, payload = raw_image.split(",", 1)
                 approx_size = int(len(payload) * 0.75)
                 return payload, self.filename, approx_size
-            return self.image, self.filename, int(len(self.image) * 0.75)
+            return raw_image, self.filename, int(len(raw_image) * 0.75)
         else:
             raise RuntimeError("Either 'image' (base64) or 'url' must be provided")
 
