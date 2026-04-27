@@ -70,14 +70,32 @@ docker compose down
 接口：
 
 - `GET /health`：健康检查
-- `POST /ocr`：提交 base64 图片或 data URL
+- `POST /ocr`：提交 base64 图片、data URL 或图片 URL
 
 请求示例：
+
+**1. Base64 图片：**
 
 ```bash
 curl -X POST http://127.0.0.1:8000/ocr \
   -H 'Content-Type: application/json' \
   -d '{"image":"BASE64_IMAGE","filename":"image.png","mime_type":"image/png"}'
+```
+
+**2. Data URL：**
+
+```bash
+curl -X POST http://127.0.0.1:8000/ocr \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"data:image/png;base64,BASE64_IMAGE","filename":"image.png"}'
+```
+
+**3. 图片 URL（推荐）：**
+
+```bash
+curl -X POST http://127.0.0.1:8000/ocr \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/image.png","mime_type":"image/png"}'
 ```
 
 ## 命令行识别

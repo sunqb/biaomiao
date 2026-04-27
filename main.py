@@ -232,9 +232,34 @@ class BaimiaoOCR:
 
 
 class OcrRequest(BaseModel):
-    image: str = Field(..., description="Base64 image payload or data URL")
+    image: str = Field(default="", description="Base64 image payload or data URL")
+    url: str = Field(default="", description="Image URL (http/https)")
     filename: str = "image.png"
     mime_type: str = "image/png"
+
+    def get_image_data(self) -> tuple[str, str]:
+        """Returns (image_payload, filename)"""
+        if self.url:
+            # Download image from URL
+            try:
+                resp = requests.get(self.url, timeout=REQUEST_TIMEOUT)
+                resp.raise_for_status()
+                payload = base64.b64encode(resp.content).decode("utf-8")
+                # Use URL filename if not provided
+                fname = self.filename
+                if fname == "image.png":
+                    fname = Path(self.url.split("?")[0]).name or "image.png"
+                return payload, fname
+            except Exception as exc:
+                raise RuntimeError(f"Failed to download image from URL: {exc}") from exc
+        elif self.image:
+            # Extract payload from base64 or data URL
+            if self.image.startswith("data:"):
+                prefix, payload = self.image.split(",", 1)
+                return payload, self.filename
+            return self.image, self.filename
+        else:
+            raise RuntimeError("Either 'image' (base64) or 'url' must be provided")
 
 
 class OcrResponse(BaseModel):
@@ -252,9 +277,8 @@ def health() -> Dict[str, str]:
 @app.post("/ocr", response_model=OcrResponse)
 def ocr(request: OcrRequest) -> OcrResponse:
     try:
-        text = BaimiaoOCR().recognize(
-            request.image, request.filename, request.mime_type
-        )
+        image_payload, filename = request.get_image_data()
+        text = BaimiaoOCR().recognize(image_payload, filename, request.mime_type)
         return OcrResponse(text=text)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
