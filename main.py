@@ -181,6 +181,7 @@ class BaimiaoOCR:
         base64_image: str,
         filename: str = "image.png",
         mime_type: str = "image/png",
+        size: int = 0,
     ) -> str:
         self._ensure_token()
         engine, token = self._get_single_permission()
@@ -190,13 +191,14 @@ class BaimiaoOCR:
         image_data_url = f"data:{detected_mime};base64,{image_payload}"
         hash_value = hashlib.sha1(image_data_url.encode("utf-8")).hexdigest()
 
+        # size is original image bytes; fallback to base64 string length if not provided
         data = {
             "batchId": "",
             "total": 1,
             "token": token,
             "hash": hash_value,
             "name": filename,
-            "size": len(image_payload),
+            "size": size if size > 0 else len(image_payload),
             "dataUrl": image_data_url,
             "result": {},
             "status": "processing",
@@ -237,27 +239,30 @@ class OcrRequest(BaseModel):
     filename: str = "image.png"
     mime_type: str = "image/png"
 
-    def get_image_data(self) -> tuple[str, str]:
-        """Returns (image_payload, filename)"""
+    def get_image_data(self) -> tuple[str, str, int]:
+        """Returns (base64_payload, filename, original_size_in_bytes)"""
         if self.url:
             # Download image from URL
             try:
                 resp = requests.get(self.url, timeout=REQUEST_TIMEOUT)
                 resp.raise_for_status()
-                payload = base64.b64encode(resp.content).decode("utf-8")
+                raw_bytes = resp.content
+                payload = base64.b64encode(raw_bytes).decode("utf-8")
                 # Use URL filename if not provided
                 fname = self.filename
                 if fname == "image.png":
                     fname = Path(self.url.split("?")[0]).name or "image.png"
-                return payload, fname
+                return payload, fname, len(raw_bytes)
             except Exception as exc:
                 raise RuntimeError(f"Failed to download image from URL: {exc}") from exc
         elif self.image:
             # Extract payload from base64 or data URL
             if self.image.startswith("data:"):
                 prefix, payload = self.image.split(",", 1)
-                return payload, self.filename
-            return self.image, self.filename
+                # Approximate original size from base64 payload length
+                approx_size = int(len(payload) * 0.75)
+                return payload, self.filename, approx_size
+            return self.image, self.filename, int(len(self.image) * 0.75)
         else:
             raise RuntimeError("Either 'image' (base64) or 'url' must be provided")
 
@@ -277,8 +282,10 @@ def health() -> Dict[str, str]:
 @app.post("/ocr", response_model=OcrResponse)
 def ocr(request: OcrRequest) -> OcrResponse:
     try:
-        image_payload, filename = request.get_image_data()
-        text = BaimiaoOCR().recognize(image_payload, filename, request.mime_type)
+        image_payload, filename, size = request.get_image_data()
+        text = BaimiaoOCR().recognize(
+            image_payload, filename, request.mime_type, size=size
+        )
         return OcrResponse(text=text)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
