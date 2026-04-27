@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN useradd --create-home --shell /usr/sbin/nologin appuser
+RUN useradd --create-home --shell /usr/sbin/nologin appuser && \
+    mkdir -p /data && chown appuser:appuser /data
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -13,6 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=appuser:appuser . .
 
 USER appuser
+
+ENV BAIMIAO_CONFIG_PATH=/data/config.ini
 
 EXPOSE 8000
 

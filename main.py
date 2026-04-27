@@ -15,7 +15,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
-CONFIG_FILE = Path(__file__).with_name("config.ini")
+CONFIG_FILE = Path(
+    os.getenv("BAIMIAO_CONFIG_PATH", str(Path(__file__).with_name("config.ini")))
+)
 CONFIG_SECTION = "default"
 BAIMIAO_URL = "https://web.baimiaoapp.com"
 REQUEST_TIMEOUT = 15
