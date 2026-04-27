@@ -1,0 +1,21 @@
+services:
+  baimiao-ocr:
+    build:
+      context: .
+    image: baimiao-ocr:latest
+    container_name: baimiao-ocr
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      BAIMIAO_USERNAME: ${BAIMIAO_USERNAME:-}
+      BAIMIAO_PASSWORD: ${BAIMIAO_PASSWORD:-}
+      BAIMIAO_REQUEST_TIMEOUT: ${BAIMIAO_REQUEST_TIMEOUT:-15}
+      BAIMIAO_OCR_TIMEOUT: ${BAIMIAO_OCR_TIMEOUT:-60}
+      BAIMIAO_POLL_INTERVAL: ${BAIMIAO_POLL_INTERVAL:-0.2}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
