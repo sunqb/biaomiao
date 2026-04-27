@@ -55,6 +55,7 @@ class BaimiaoOCR:
             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
+            "Content-Type": "application/json;charset=utf-8",
             "X-AUTH-TOKEN": self.login_token,
             "X-AUTH-UUID": self.uuid,
             "Origin": BAIMIAO_URL,
@@ -83,9 +84,6 @@ class BaimiaoOCR:
         return config
 
     def _save_config(self) -> None:
-        if not self.config_path.exists():
-            return
-
         with self.config_path.open("w", encoding="utf-8") as file:
             self.config.write(file)
 
@@ -191,7 +189,9 @@ class BaimiaoOCR:
         image_data_url = f"data:{detected_mime};base64,{image_payload}"
         raw_bytes = base64.b64decode(image_payload)
         hash_value = hashlib.md5(raw_bytes).hexdigest()
-        actual_size = size if size > 0 else len(raw_bytes)
+        actual_size = (
+            size if size > 0 else len(image_payload)
+        )  # base64字符串长度，与ocr.bak一致
 
         data = {
             "batchId": "",
@@ -276,6 +276,14 @@ class OcrResponse(BaseModel):
 
 
 app = FastAPI(title="Baimiao OCR API", version="1.0.0")
+_ocr_instance: BaimiaoOCR | None = None
+
+
+def get_ocr_instance() -> BaimiaoOCR:
+    global _ocr_instance
+    if _ocr_instance is None:
+        _ocr_instance = BaimiaoOCR()
+    return _ocr_instance
 
 
 @app.get("/health")
@@ -287,7 +295,7 @@ def health() -> Dict[str, str]:
 def ocr(request: OcrRequest) -> OcrResponse:
     try:
         image_payload, filename, size = request.get_image_data()
-        text = BaimiaoOCR().recognize(
+        text = get_ocr_instance().recognize(
             image_payload, filename, request.mime_type, size=size
         )
         return OcrResponse(text=text)
