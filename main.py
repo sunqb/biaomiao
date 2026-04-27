@@ -84,8 +84,11 @@ class BaimiaoOCR:
         return config
 
     def _save_config(self) -> None:
-        with self.config_path.open("w", encoding="utf-8") as file:
-            self.config.write(file)
+        try:
+            with self.config_path.open("w", encoding="utf-8") as file:
+                self.config.write(file)
+        except OSError:
+            pass  # 容器只读文件系统时忽略，token 已保留在内存
 
     def _set_config(self, key: str, value: str) -> None:
         self.config.set(CONFIG_SECTION, key, value)
